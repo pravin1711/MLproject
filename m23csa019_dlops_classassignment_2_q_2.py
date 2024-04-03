@@ -26,9 +26,9 @@ model.fc = nn.Linear(num_ftrs, 10)  # STL10 has 10 classes
 
 # Step 4: Prepare STL10 dataset
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),  # Resize to fit ResNet input size
+    transforms.Resize((224, 224)),  # Resize to fit model input size
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # Normalize
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
 ])
 
 train_set = datasets.STL10(root='./data', split='train', download=True, transform=transform)
@@ -37,94 +37,88 @@ test_set = datasets.STL10(root='./data', split='test', download=True, transform=
 train_loader = torch.utils.data.DataLoader(train_set, batch_size=32, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_set, batch_size=32, shuffle=False)
 
-# Step 5: Define training loop
+# Configuration-specific model modifications
+def modify_model(config_name, model_config):
+    model = model_config['model'](pretrained=True)
+    for param in model.parameters():
+        param.requires_grad = False
+
+    if config_name == 'ResNet50_Dropout':
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(num_ftrs, 10)  # STL10 has 10 classes
+        )
+    else:  # Applies to both ResNet18 and ResNet50_LR_Adjusted
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, 10)  # STL10 has 10 classes
+    
+    return model
+
+# Training loop
 def train_model(model, optimizer, criterion, num_epochs=5):
+    model.train()
     train_losses = []
-    train_accuracies = []
 
     for epoch in range(num_epochs):
-        model.train()
         running_loss = 0.0
         correct = 0
         total = 0
 
         for inputs, labels in train_loader:
             optimizer.zero_grad()
+
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
+            _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
         epoch_loss = running_loss / len(train_loader)
         epoch_accuracy = correct / total
         train_losses.append(epoch_loss)
-        train_accuracies.append(epoch_accuracy)
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}")
+        print(f'Epoch {epoch+1}, Loss: {epoch_loss}, Accuracy: {epoch_accuracy}')
 
-    return train_losses, train_accuracies
+    return train_losses
 
-# Step 6: Train the model with different optimizers
-optimizers = ['Adam', 'Adagrad', 'Adadelta']
+# Configurations
+configurations = {
+    'ResNet18': {
+        'model': models.resnet18,
+        'lr': 0.001
+    },
+    'ResNet50_Dropout': {
+        'model': models.resnet50,
+        'lr': 0.001  # Adjust as needed
+    },
+    'ResNet50_LR_Adjusted': {
+        'model': models.resnet50,
+        'lr': 0.0001
+    }
+}
+
+# Train and evaluate each configuration
 results = {}
-
-for optimizer_name in optimizers:
-    if optimizer_name == 'Adam':
-        optimizer = optim.Adam(model.fc.parameters(), lr=0.001)
-    elif optimizer_name == 'Adagrad':
-        optimizer = optim.Adagrad(model.fc.parameters(), lr=0.01)
-    elif optimizer_name == 'Adadelta':
-        optimizer = optim.Adadelta(model.fc.parameters())
-
-
+for config_name, config in configurations.items():
+    print(f"\nTraining configuration: {config_name}")
+    model = modify_model(config_name, config)
+    optimizer = optim.Adam(model.fc.parameters(), lr=config['lr'])
     criterion = nn.CrossEntropyLoss()
-    train_losses, train_accuracies = train_model(model, optimizer, criterion)
-    results[optimizer_name] = {'loss': train_losses, 'accuracy': train_accuracies}
+    train_losses = train_model(model, optimizer, criterion, num_epochs=5)  # Adjust num_epochs as needed
+    results[config_name] = train_losses
 
-# Step 7: Plot training curves
+# Plot training curves
 plt.figure(figsize=(10, 5))
-
-for optimizer_name in optimizers:
-    plt.plot(range(1, len(results[optimizer_name]['loss']) + 1), results[optimizer_name]['loss'], label=f'{optimizer_name} Loss')
+for config_name, train_losses in results.items():
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label=f'{config_name} Loss')
 
 plt.xlabel('Epochs')
 plt.ylabel('Training Loss')
 plt.title('Training Loss Curves')
 plt.legend()
 plt.show()
-
-plt.figure(figsize=(10, 5))
-
-for optimizer_name in optimizers:
-    plt.plot(range(1, len(results[optimizer_name]['accuracy']) + 1), results[optimizer_name]['accuracy'], label=f'{optimizer_name} Accuracy')
-
-plt.xlabel('Epochs')
-plt.ylabel('Training Accuracy')
-plt.title('Training Accuracy Curves')
-plt.legend()
-plt.show()
-
-# Step 8: Evaluate on test set and report final top-5 accuracy
-def test_model(model, test_loader):
-    model.eval()
-    correct_top5 = 0
-    total = 0
-
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            outputs = model(inputs)
-            _, predicted_top5 = torch.topk(outputs, 5, dim=1)
-            total += labels.size(0)
-            for label, predicted_labels in zip(labels, predicted_top5):
-                if label in predicted_labels:
-                    correct_top5 += 1
-
-    top5_accuracy = correct_top5 / total
-    print(f"Final Top-5 Test Accuracy: {top5_accuracy:.4f}")
-
-test_model(model, test_loader)
